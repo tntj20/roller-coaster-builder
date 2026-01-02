@@ -86,39 +86,38 @@ export function Track() {
       const loopInfo = getLoopMetaAt(t);
       
       if (loopInfo && loopInfo.meta) {
-        // Use reference frame from loop metadata - orientation based on ideal circle, not helical path
+        // Use reference frame from loop metadata - orientation based on ideal circle
         const meta = loopInfo.meta;
         const theta = loopInfo.theta;
         
-        // Reference tangent for ideal circular loop: d/dθ of (sin(θ), 1-cos(θ)) = (cos(θ), sin(θ))
-        const refTangent = new THREE.Vector3()
-          .addScaledVector(meta.forward, Math.cos(theta))
-          .addScaledVector(meta.up, Math.sin(theta))
+        // Loop center is at entryPos + up * radius
+        const loopCenter = meta.entryPos.clone().addScaledVector(meta.up, meta.radius);
+        
+        // True inward radial: from point toward center (ignoring lateral corkscrew offset)
+        // Ideal point position on circle: center + (-sin(θ)*forward - cos(θ)*up) * radius
+        // But simpler: radial pointing inward = -sin(θ)*forward + cos(θ)*up
+        const radialInward = new THREE.Vector3()
+          .addScaledVector(meta.forward, -Math.sin(theta))
+          .addScaledVector(meta.up, Math.cos(theta))
           .normalize();
         
-        // The "up" relative to the loop plane is the inward radial direction
-        // Radial: (sin(θ), 1-cos(θ)) normalized, pointing from center to point
-        // Center is at entryPos + up*radius, point is at center + radial*radius
-        // Inward normal points from point toward center = -radial
-        const radialDir = new THREE.Vector3()
-          .addScaledVector(meta.forward, Math.sin(theta))
-          .addScaledVector(meta.up, 1 - Math.cos(theta))
-          .normalize();
-        
-        // "Up" for the track is the inward radial (pointing to loop center)
-        up = radialDir.clone().negate();
+        // "Up" for the track is the inward radial direction
+        up = radialInward.clone();
         
         // Normal (sideways) is the right vector - constant throughout the loop
         normal = meta.right.clone();
         
-        // Ensure orthogonality with actual tangent
+        // Ensure orthogonality with actual tangent (the helical path may differ slightly)
         const upDot = up.dot(tangent);
         up.sub(tangent.clone().multiplyScalar(upDot));
         if (up.length() > 0.01) {
           up.normalize();
+        } else {
+          // Fallback if degenerate
+          up = radialInward.clone();
         }
         
-        // Re-derive normal from tangent x up
+        // Re-derive normal from tangent x up to ensure orthogonal frame
         normal = new THREE.Vector3().crossVectors(tangent, up).normalize();
         
         prevUp.copy(up);
