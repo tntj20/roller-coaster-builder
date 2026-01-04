@@ -2,6 +2,14 @@ import { useMemo } from "react";
 import * as THREE from "three";
 import { useRollerCoaster } from "@/lib/stores/useRollerCoaster";
 import { Line } from "@react-three/drei";
+import {
+  RAIL_OFFSET, TIE_WIDTH, TIE_HEIGHT, TIE_DEPTH,
+  SUPPORT_LEG_SIZE, SUPPORT_CROSSBRACE_SIZE, SUPPORT_DIAGONAL_SIZE, LEG_INSET,
+  CABLE_ANCHOR_TOP_RADIUS, CABLE_ANCHOR_BOTTOM_RADIUS, CABLE_ANCHOR_HEIGHT,
+  SUPPORT_INTERVAL, LIGHT_INTERVAL, SAMPLES_PER_POINT,
+  TRACK_LIGHT_SIZE, TRACK_LIGHT_OFFSET,
+  MIN_SUPPORT_HEIGHT, CROSSBRACE_MIN_HEIGHT, DIAGONAL_MIN_HEIGHT
+} from "@/lib/config/scale";
 
 function interpolateTilt(trackPoints: { tilt: number }[], t: number, isLooped: boolean): number {
   if (trackPoints.length < 2) return 0;
@@ -33,7 +41,7 @@ export function Track() {
     const curve = new THREE.CatmullRomCurve3(points, isLooped, "catmullrom", 0.5);
     
     const railData: { point: THREE.Vector3; tilt: number; tangent: THREE.Vector3; normal: THREE.Vector3; isLoop: boolean; loopTheta?: number }[] = [];
-    const numSamples = Math.max(trackPoints.length * 20, 100);
+    const numSamples = Math.max(trackPoints.length * SAMPLES_PER_POINT, 60);
     
     // Helper to get loop metadata at parameter t
     const getLoopMetaAt = (t: number): { meta: typeof trackPoints[0]['loopMeta'], theta: number } | null => {
@@ -155,12 +163,12 @@ export function Track() {
     }
     
     const woodSupports: { pos: THREE.Vector3; tangent: THREE.Vector3; height: number; tilt: number }[] = [];
-    const supportInterval = 3;
+    const supportInterval = SUPPORT_INTERVAL;
     
     // Only add wood supports for non-loop sections
     for (let i = 0; i < railData.length; i += supportInterval) {
       const { point, tangent, tilt, isLoop } = railData[i];
-      if (point.y > 1 && !isLoop) {
+      if (point.y > MIN_SUPPORT_HEIGHT && !isLoop) {
         woodSupports.push({ 
           pos: point.clone(), 
           tangent: tangent.clone(),
@@ -193,7 +201,7 @@ export function Track() {
     }
     
     const trackLights: { pos: THREE.Vector3; normal: THREE.Vector3 }[] = [];
-    const lightInterval = 6;
+    const lightInterval = LIGHT_INTERVAL;
     
     for (let i = 0; i < railData.length; i += lightInterval) {
       const { point, tangent } = railData[i];
@@ -210,7 +218,7 @@ export function Track() {
   
   const leftRail: [number, number, number][] = [];
   const rightRail: [number, number, number][] = [];
-  const railOffset = 0.3;
+  const railOffset = RAIL_OFFSET;
   
   for (let i = 0; i < railData.length; i++) {
     const { point, tilt, tangent, normal } = railData[i];
@@ -256,10 +264,10 @@ export function Track() {
         return (
           <mesh
             key={`tie-${i}`}
-            position={[point.x, point.y - 0.08, point.z]}
+            position={[point.x, point.y - TIE_HEIGHT, point.z]}
             rotation={[tiltRad, angle, 0]}
           >
-            <boxGeometry args={[1.0, 0.08, 0.12]} />
+            <boxGeometry args={[TIE_WIDTH, TIE_HEIGHT, TIE_DEPTH]} />
             <meshStandardMaterial color="#8B4513" />
           </mesh>
         );
@@ -284,7 +292,7 @@ export function Track() {
         const leftHeight = leftY;
         const rightHeight = rightY;
         
-        const legInset = 0.15;
+        const legInset = LEG_INSET;
         const leftLegX = pos.x + normal.x * (railOffset - legInset) * tiltCos;
         const leftLegZ = pos.z + normal.z * (railOffset - legInset) * tiltCos;
         const rightLegX = pos.x - normal.x * (railOffset - legInset) * tiltCos;
@@ -297,39 +305,39 @@ export function Track() {
         return (
           <group key={`wood-${i}`}>
             <mesh position={[leftLegX, leftHeight / 2, leftLegZ]}>
-              <boxGeometry args={[0.12, leftHeight, 0.12]} />
+              <boxGeometry args={[SUPPORT_LEG_SIZE, leftHeight, SUPPORT_LEG_SIZE]} />
               <meshStandardMaterial color="#8B5A2B" />
             </mesh>
             <mesh position={[rightLegX, rightHeight / 2, rightLegZ]}>
-              <boxGeometry args={[0.12, rightHeight, 0.12]} />
+              <boxGeometry args={[SUPPORT_LEG_SIZE, rightHeight, SUPPORT_LEG_SIZE]} />
               <meshStandardMaterial color="#8B5A2B" />
             </mesh>
             
-            {height > 2 && (
+            {height > CROSSBRACE_MIN_HEIGHT && (
               <>
                 <mesh 
                   position={[pos.x, height * 0.3, pos.z]} 
                   rotation={[0, angle, 0]}
                 >
-                  <boxGeometry args={[0.08, 0.08, railOffset * 2.2]} />
+                  <boxGeometry args={[SUPPORT_CROSSBRACE_SIZE, SUPPORT_CROSSBRACE_SIZE, railOffset * 2.2]} />
                   <meshStandardMaterial color="#A0522D" />
                 </mesh>
                 <mesh 
                   position={[pos.x, height * 0.6, pos.z]} 
                   rotation={[0, angle, 0]}
                 >
-                  <boxGeometry args={[0.08, 0.08, railOffset * 2.2]} />
+                  <boxGeometry args={[SUPPORT_CROSSBRACE_SIZE, SUPPORT_CROSSBRACE_SIZE, railOffset * 2.2]} />
                   <meshStandardMaterial color="#A0522D" />
                 </mesh>
               </>
             )}
             
-            {height > 3 && (
+            {height > DIAGONAL_MIN_HEIGHT && (
               <mesh 
                 position={[pos.x, height * 0.45, pos.z]} 
                 rotation={[crossAngle, angle, 0]}
               >
-                <boxGeometry args={[0.06, crossLength * 0.5, 0.06]} />
+                <boxGeometry args={[SUPPORT_DIAGONAL_SIZE, crossLength * 0.5, SUPPORT_DIAGONAL_SIZE]} />
                 <meshStandardMaterial color="#CD853F" />
               </mesh>
             )}
@@ -364,8 +372,8 @@ export function Track() {
               lineWidth={2}
             />
             {/* Ground anchor */}
-            <mesh position={[groundPos.x, 0.1, groundPos.z]}>
-              <cylinderGeometry args={[0.3, 0.4, 0.2, 8]} />
+            <mesh position={[groundPos.x, CABLE_ANCHOR_HEIGHT / 2, groundPos.z]}>
+              <cylinderGeometry args={[CABLE_ANCHOR_TOP_RADIUS, CABLE_ANCHOR_BOTTOM_RADIUS, CABLE_ANCHOR_HEIGHT, 8]} />
               <meshStandardMaterial color="#555555" metalness={0.8} roughness={0.3} />
             </mesh>
           </group>
@@ -374,21 +382,21 @@ export function Track() {
       
       {isNightMode && trackLights.map((light, i) => {
         const { pos, normal } = light;
-        const leftX = pos.x + normal.x * 0.5;
-        const leftZ = pos.z + normal.z * 0.5;
-        const rightX = pos.x - normal.x * 0.5;
-        const rightZ = pos.z - normal.z * 0.5;
+        const leftX = pos.x + normal.x * TRACK_LIGHT_OFFSET;
+        const leftZ = pos.z + normal.z * TRACK_LIGHT_OFFSET;
+        const rightX = pos.x - normal.x * TRACK_LIGHT_OFFSET;
+        const rightZ = pos.z - normal.z * TRACK_LIGHT_OFFSET;
         const colors = ["#FF0000", "#FFFF00", "#00FF00", "#00FFFF", "#FF00FF"];
         const color = colors[i % colors.length];
         
         return (
           <group key={`light-${i}`}>
             <mesh position={[leftX, pos.y + 0.1, leftZ]}>
-              <sphereGeometry args={[0.3, 6, 6]} />
+              <sphereGeometry args={[TRACK_LIGHT_SIZE, 6, 6]} />
               <meshBasicMaterial color={color} />
             </mesh>
             <mesh position={[rightX, pos.y + 0.1, rightZ]}>
-              <sphereGeometry args={[0.3, 6, 6]} />
+              <sphereGeometry args={[TRACK_LIGHT_SIZE, 6, 6]} />
               <meshBasicMaterial color={color} />
             </mesh>
           </group>
