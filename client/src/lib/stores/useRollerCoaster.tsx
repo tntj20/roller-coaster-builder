@@ -5,10 +5,12 @@ export type CoasterMode = "build" | "ride" | "preview";
 
 // Loop segment descriptor - stored separately from track points
 // The actual loop frame (forward, up, right) is computed at runtime from the spline
+// Uses corkscrew helix geometry: advances forward by 'pitch' while rotating 360 degrees
 export interface LoopSegment {
   id: string;
   entryPointId: string;  // ID of track point where loop starts
   radius: number;
+  pitch: number;  // Forward distance traveled during one full rotation (prevents intersection)
 }
 
 export interface TrackPoint {
@@ -23,6 +25,7 @@ interface SerializedLoopSegment {
   id: string;
   entryPointId: string;
   radius: number;
+  pitch: number;
 }
 
 interface SerializedTrackPoint {
@@ -75,6 +78,7 @@ function serializeLoopSegment(segment: LoopSegment): SerializedLoopSegment {
     id: segment.id,
     entryPointId: segment.entryPointId,
     radius: segment.radius,
+    pitch: segment.pitch,
   };
 }
 
@@ -83,6 +87,7 @@ function deserializeLoopSegment(serialized: SerializedLoopSegment): LoopSegment 
     id: serialized.id,
     entryPointId: serialized.entryPointId,
     radius: serialized.radius,
+    pitch: serialized.pitch ?? 12,  // Default pitch for backwards compatibility
   };
 }
 
@@ -224,11 +229,13 @@ export const useRollerCoaster = create<RollerCoasterState>((set, get) => ({
       if (entryPoint.hasLoop) return state;
       
       const loopRadius = 5;
+      const loopPitch = 12;  // Forward distance during one rotation (prevents intersection)
       
       const loopSegment: LoopSegment = {
         id: `loop-${Date.now()}`,
         entryPointId: id,
         radius: loopRadius,
+        pitch: loopPitch,
       };
       
       const newTrackPoints = state.trackPoints.map((p) =>
@@ -367,6 +374,7 @@ export const useRollerCoaster = create<RollerCoasterState>((set, get) => ({
         name: coaster.name.trim(),
         timestamp: Date.now(),
         trackPoints: coaster.trackPoints,
+        loopSegments: coaster.loopSegments || [],
         isLooped: Boolean(coaster.isLooped),
         hasChainLift: coaster.hasChainLift !== false,
         showWoodSupports: Boolean(coaster.showWoodSupports),

@@ -5,57 +5,69 @@ import { useRollerCoaster, LoopSegment } from "@/lib/stores/useRollerCoaster";
 import { getTrackCurve } from "./Track";
 
 interface TrackSection {
-  type: "spline" | "loop";
+  type: "spline" | "roll";
   startProgress: number;
   endProgress: number;
   arcLength: number;
-  loopFrame?: LoopFrame;
+  rollFrame?: BarrelRollFrame;
   splineStartT?: number;
   splineEndT?: number;
   pointIndex?: number;
 }
 
-interface LoopFrame {
+interface BarrelRollFrame {
   entryPos: THREE.Vector3;
   forward: THREE.Vector3;
   up: THREE.Vector3;
   right: THREE.Vector3;
   radius: number;
+  pitch: number;
 }
 
-function sampleLoopAnalytically(
-  frame: LoopFrame,
-  theta: number
+// Eased barrel roll with zero angular velocity at endpoints
+function sampleBarrelRollAnalytically(
+  frame: BarrelRollFrame,
+  t: number
 ): { point: THREE.Vector3; tangent: THREE.Vector3; up: THREE.Vector3 } {
-  const { entryPos, forward, up, radius } = frame;
+  const { entryPos, forward, up: U0, right: R0, radius, pitch } = frame;
   
-  const point = new THREE.Vector3(
-    entryPos.x + forward.x * Math.sin(theta) * radius + up.x * (1 - Math.cos(theta)) * radius,
-    entryPos.y + forward.y * Math.sin(theta) * radius + up.y * (1 - Math.cos(theta)) * radius,
-    entryPos.z + forward.z * Math.sin(theta) * radius + up.z * (1 - Math.cos(theta)) * radius
-  );
+  const twoPi = Math.PI * 2;
   
+  // Eased theta: zero angular velocity at t=0 and t=1
+  const theta = twoPi * (t - Math.sin(twoPi * t) / twoPi);
+  const dThetaDt = twoPi * (1 - Math.cos(twoPi * t));
+  
+  const point = new THREE.Vector3()
+    .copy(entryPos)
+    .addScaledVector(forward, pitch * t)
+    .addScaledVector(R0, radius * (Math.cos(theta) - 1))
+    .addScaledVector(U0, radius * Math.sin(theta));
+  
+  // At t=0 or t=1, dThetaDt=0, so tangent = forward*pitch (normalized)
   const tangent = new THREE.Vector3()
-    .addScaledVector(forward, Math.cos(theta))
-    .addScaledVector(up, Math.sin(theta))
+    .copy(forward).multiplyScalar(pitch)
+    .addScaledVector(R0, -radius * Math.sin(theta) * dThetaDt)
+    .addScaledVector(U0, radius * Math.cos(theta) * dThetaDt)
     .normalize();
   
-  const inwardUp = new THREE.Vector3()
-    .addScaledVector(forward, -Math.sin(theta))
-    .addScaledVector(up, Math.cos(theta))
+  const rotatedUp = new THREE.Vector3()
+    .addScaledVector(U0, Math.cos(theta))
+    .addScaledVector(R0, -Math.sin(theta))
     .normalize();
   
-  return { point, tangent, up: inwardUp };
+  return { point, tangent, up: rotatedUp };
 }
 
-function computeLoopFrame(
+function computeRollFrame(
   spline: THREE.CatmullRomCurve3,
   splineT: number,
   prevTangent: THREE.Vector3,
   prevUp: THREE.Vector3,
-  radius: number
-): LoopFrame {
-  const entryPos = spline.getPoint(splineT);
+  radius: number,
+  pitch: number,
+  rollOffset: THREE.Vector3
+): BarrelRollFrame {
+  const entryPos = spline.getPoint(splineT).add(rollOffset);
   const forward = spline.getTangent(splineT).normalize();
   
   const dot = Math.max(-1, Math.min(1, prevTangent.dot(forward)));
@@ -88,7 +100,31 @@ function computeLoopFrame(
   
   const right = new THREE.Vector3().crossVectors(forward, entryUp).normalize();
   
-  return { entryPos, forward, up: entryUp, right, radius };
+  return { entryPos, forward, up: entryUp, right, radius, pitch };
+}
+
+// Compute arc length of eased barrel roll numerically
+function computeRollArcLength(radius: number, pitch: number): number {
+  const steps = 100;
+  let length = 0;
+  const twoPi = Math.PI * 2;
+  
+  for (let i = 0; i < steps; i++) {
+    const t1 = i / steps;
+    const t2 = (i + 1) / steps;
+    
+    const theta1 = twoPi * (t1 - Math.sin(twoPi * t1) / twoPi);
+    const theta2 = twoPi * (t2 - Math.sin(twoPi * t2) / twoPi);
+    const dTheta = theta2 - theta1;
+    
+    // Approximate position change
+    const dForward = pitch / steps;
+    const dRadial = radius * Math.sqrt(dTheta * dTheta);
+    
+    length += Math.sqrt(dForward * dForward + dRadial * dRadial);
+  }
+  
+  return length;
 }
 
 export function RideCamera() {
@@ -119,6 +155,7 @@ export function RideCamera() {
     const totalSplineSegments = isLooped ? numPoints : numPoints - 1;
     const sections: TrackSection[] = [];
     let accumulatedLength = 0;
+    let rollOffset = new THREE.Vector3(0, 0, 0);
     
     let prevTangent = curve.getTangent(0).normalize();
     let prevUp = new THREE.Vector3(0, 1, 0);
@@ -137,22 +174,25 @@ export function RideCamera() {
       
       if (loopSeg) {
         const splineT = i / totalSplineSegments;
-        const loopFrame = computeLoopFrame(curve, splineT, prevTangent, prevUp, loopSeg.radius);
-        const loopArcLength = 2 * Math.PI * loopSeg.radius;
+        const rollFrame = computeRollFrame(curve, splineT, prevTangent, prevUp, loopSeg.radius, loopSeg.pitch, rollOffset.clone());
+        
+        const rollArcLength = computeRollArcLength(loopSeg.radius, loopSeg.pitch);
         
         sections.push({
-          type: "loop",
+          type: "roll",
           startProgress: 0,
           endProgress: 0,
-          arcLength: loopArcLength,
-          loopFrame,
+          arcLength: rollArcLength,
+          rollFrame,
           pointIndex: i
         });
-        accumulatedLength += loopArcLength;
+        accumulatedLength += rollArcLength;
         
-        const exitSample = sampleLoopAnalytically(loopFrame, Math.PI * 2);
-        prevTangent.copy(exitSample.tangent);
-        prevUp.copy(exitSample.up);
+        rollOffset.addScaledVector(rollFrame.forward, loopSeg.pitch);
+        
+        // After eased roll, tangent and up return to entry values
+        prevTangent.copy(rollFrame.forward);
+        prevUp.copy(rollFrame.up);
       }
       
       if (i >= numPoints - 1 && !isLooped) continue;
@@ -210,7 +250,7 @@ export function RideCamera() {
     let foundClimb = false;
     
     for (let p = 0; p <= 0.5; p += 0.01) {
-      const sample = sampleHybridTrack(p, sections, curve);
+      const sample = sampleHybridTrack(p, sections, curve, loopSegments, trackPoints, isLooped);
       if (sample) {
         if (sample.tangent.y > 0.1) foundClimb = true;
         if (foundClimb && sample.point.y > maxHeight) {
@@ -242,7 +282,7 @@ export function RideCamera() {
     
     const curve = curveRef.current;
     
-    const currentSample = sampleHybridTrack(rideProgress, sections, curve);
+    const currentSample = sampleHybridTrack(rideProgress, sections, curve, loopSegments, trackPoints, isLooped);
     if (!currentSample) return;
     
     const currentHeight = currentSample.point.y;
@@ -276,16 +316,16 @@ export function RideCamera() {
     
     setRideProgress(newProgress);
     
-    const sample = sampleHybridTrack(newProgress, sections, curve);
+    const sample = sampleHybridTrack(newProgress, sections, curve, loopSegments, trackPoints, isLooped);
     if (!sample) return;
     
-    const { point: position, tangent, up: sampleUp, inLoop } = sample;
+    const { point: position, tangent, up: sampleUp, inRoll } = sample;
     
-    if (inLoop) {
+    if (inRoll) {
       transportedUp.current.copy(sampleUp);
     } else {
-      const prevSample = sampleHybridTrack(lastProgress.current, sections, curve);
-      if (prevSample && !prevSample.inLoop) {
+      const prevSample = sampleHybridTrack(lastProgress.current, sections, curve, loopSegments, trackPoints, isLooped);
+      if (prevSample && !prevSample.inRoll) {
         const prevTangent = prevSample.tangent;
         
         const rotationAxis = new THREE.Vector3().crossVectors(prevTangent, tangent);
@@ -336,8 +376,11 @@ export function RideCamera() {
 function sampleHybridTrack(
   progress: number,
   sections: TrackSection[],
-  spline: THREE.CatmullRomCurve3
-): { point: THREE.Vector3; tangent: THREE.Vector3; up: THREE.Vector3; inLoop: boolean } | null {
+  spline: THREE.CatmullRomCurve3,
+  loopSegments: LoopSegment[],
+  trackPoints: { id: string; position: THREE.Vector3 }[],
+  isLooped: boolean
+): { point: THREE.Vector3; tangent: THREE.Vector3; up: THREE.Vector3; inRoll: boolean } | null {
   if (sections.length === 0) return null;
   
   progress = Math.max(0, Math.min(progress, 0.9999));
@@ -356,14 +399,34 @@ function sampleHybridTrack(
   
   const localT = (progress - section.startProgress) / (section.endProgress - section.startProgress);
   
-  if (section.type === "loop" && section.loopFrame) {
-    const theta = localT * Math.PI * 2;
-    const sample = sampleLoopAnalytically(section.loopFrame, theta);
-    return { ...sample, inLoop: true };
+  if (section.type === "roll" && section.rollFrame) {
+    const sample = sampleBarrelRollAnalytically(section.rollFrame, localT);
+    return { ...sample, inRoll: true };
   } else if (section.splineStartT !== undefined && section.splineEndT !== undefined) {
     const splineT = section.splineStartT + localT * (section.splineEndT - section.splineStartT);
     const point = spline.getPoint(splineT);
     const tangent = spline.getTangent(splineT).normalize();
+    
+    let rollOffset = new THREE.Vector3(0, 0, 0);
+    const loopMap = new Map<string, LoopSegment>();
+    for (const seg of loopSegments) {
+      loopMap.set(seg.entryPointId, seg);
+    }
+    
+    const numPoints = trackPoints.length;
+    const totalSplineSegments = isLooped ? numPoints : numPoints - 1;
+    
+    for (let i = 0; i < numPoints && i <= (section.pointIndex ?? 0); i++) {
+      const tp = trackPoints[i];
+      const loopSeg = loopMap.get(tp.id);
+      if (loopSeg) {
+        const spT = i / totalSplineSegments;
+        const fwd = spline.getTangent(spT).normalize();
+        rollOffset.addScaledVector(fwd, loopSeg.pitch);
+      }
+    }
+    
+    point.add(rollOffset);
     
     let up = new THREE.Vector3(0, 1, 0);
     const dot = up.dot(tangent);
@@ -376,7 +439,7 @@ function sampleHybridTrack(
       up.sub(tangent.clone().multiplyScalar(d)).normalize();
     }
     
-    return { point, tangent, up, inLoop: false };
+    return { point, tangent, up, inRoll: false };
   }
   
   return null;

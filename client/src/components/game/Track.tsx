@@ -29,39 +29,58 @@ interface RailSample {
   tilt: number;
 }
 
-interface LoopFrame {
+interface BarrelRollFrame {
   entryPos: THREE.Vector3;
   forward: THREE.Vector3;
   up: THREE.Vector3;
   right: THREE.Vector3;
   radius: number;
+  pitch: number;
 }
 
-function sampleLoopAnalytically(
-  frame: LoopFrame,
-  theta: number
+// Eased barrel roll: uses an easing function so angular velocity is zero at endpoints
+// This ensures tangent is purely forward at entry and exit (C1 continuous with spline)
+// θ(t) = 2π * (t - sin(2πt)/(2π)), which has dθ/dt = 0 at t=0 and t=1
+function sampleBarrelRollAnalytically(
+  frame: BarrelRollFrame,
+  t: number  // 0 to 1
 ): { point: THREE.Vector3; tangent: THREE.Vector3; up: THREE.Vector3; normal: THREE.Vector3 } {
-  const { entryPos, forward, up, right, radius } = frame;
+  const { entryPos, forward, up: U0, right: R0, radius, pitch } = frame;
   
-  const point = new THREE.Vector3(
-    entryPos.x + forward.x * Math.sin(theta) * radius + up.x * (1 - Math.cos(theta)) * radius,
-    entryPos.y + forward.y * Math.sin(theta) * radius + up.y * (1 - Math.cos(theta)) * radius,
-    entryPos.z + forward.z * Math.sin(theta) * radius + up.z * (1 - Math.cos(theta)) * radius
-  );
+  const twoPi = Math.PI * 2;
   
+  // Eased theta: starts and ends with zero angular velocity
+  const theta = twoPi * (t - Math.sin(twoPi * t) / twoPi);
+  const dThetaDt = twoPi * (1 - Math.cos(twoPi * t));
+  
+  // Position on spiral
+  const point = new THREE.Vector3()
+    .copy(entryPos)
+    .addScaledVector(forward, pitch * t)
+    .addScaledVector(R0, radius * (Math.cos(theta) - 1))
+    .addScaledVector(U0, radius * Math.sin(theta));
+  
+  // Tangent: dP/dt = forward*pitch + (R0*(-radius*sin(θ)) + U0*(radius*cos(θ))) * dθ/dt
   const tangent = new THREE.Vector3()
-    .addScaledVector(forward, Math.cos(theta))
-    .addScaledVector(up, Math.sin(theta))
+    .copy(forward).multiplyScalar(pitch)
+    .addScaledVector(R0, -radius * Math.sin(theta) * dThetaDt)
+    .addScaledVector(U0, radius * Math.cos(theta) * dThetaDt)
     .normalize();
   
-  const inwardUp = new THREE.Vector3()
-    .addScaledVector(forward, -Math.sin(theta))
-    .addScaledVector(up, Math.cos(theta))
+  // Up vector rotates with theta (same eased theta)
+  const rotatedUp = new THREE.Vector3()
+    .addScaledVector(U0, Math.cos(theta))
+    .addScaledVector(R0, -Math.sin(theta))
     .normalize();
   
-  const normal = new THREE.Vector3().crossVectors(tangent, inwardUp).normalize();
+  const rotatedRight = new THREE.Vector3()
+    .addScaledVector(R0, Math.cos(theta))
+    .addScaledVector(U0, Math.sin(theta))
+    .normalize();
   
-  return { point, tangent, up: inwardUp, normal };
+  const normal = rotatedRight.clone();
+  
+  return { point, tangent, up: rotatedUp, normal };
 }
 
 export function Track() {
@@ -96,13 +115,15 @@ export function Track() {
     }
     prevUp.normalize();
     
+    let rollOffset = new THREE.Vector3(0, 0, 0);
+    
     for (let pointIdx = 0; pointIdx < numTrackPoints; pointIdx++) {
       const currentPoint = trackPoints[pointIdx];
       const loopSeg = loopMap.get(currentPoint.id);
       
       if (loopSeg) {
         const splineT = pointIdx / totalSplineSegments;
-        const entryPos = baseSpline.getPoint(splineT);
+        const entryPos = baseSpline.getPoint(splineT).add(rollOffset.clone());
         const splineTangent = baseSpline.getTangent(splineT).normalize();
         
         const forward = splineTangent.clone();
@@ -137,18 +158,19 @@ export function Track() {
         
         const right = new THREE.Vector3().crossVectors(forward, entryUp).normalize();
         
-        const loopFrame: LoopFrame = {
+        const rollFrame: BarrelRollFrame = {
           entryPos,
           forward,
           up: entryUp,
           right,
-          radius: loopSeg.radius
+          radius: loopSeg.radius,
+          pitch: loopSeg.pitch
         };
         
-        const loopSamples = 32;
-        for (let i = 0; i <= loopSamples; i++) {
-          const theta = (i / loopSamples) * Math.PI * 2;
-          const sample = sampleLoopAnalytically(loopFrame, theta);
+        const rollSamples = 64;  // More samples for smooth eased roll
+        for (let i = 0; i <= rollSamples; i++) {
+          const t = i / rollSamples;
+          const sample = sampleBarrelRollAnalytically(rollFrame, t);
           railData.push({
             point: sample.point,
             tangent: sample.tangent,
@@ -158,9 +180,11 @@ export function Track() {
           });
         }
         
-        const exitSample = sampleLoopAnalytically(loopFrame, Math.PI * 2);
-        prevTangent.copy(exitSample.tangent);
-        prevUp.copy(exitSample.up);
+        rollOffset.addScaledVector(forward, loopSeg.pitch);
+        
+        // Exit: tangent should now match forward (since dθ/dt = 0 at t=1)
+        prevTangent.copy(forward);  // Exit tangent is forward
+        prevUp.copy(entryUp);  // After full rotation, up returns to entry up
       }
       
       if (pointIdx >= numTrackPoints - 1 && !isLooped) continue;
@@ -169,7 +193,7 @@ export function Track() {
         const localT = s / numSamplesPerSegment;
         const globalT = (pointIdx + localT) / totalSplineSegments;
         
-        const point = baseSpline.getPoint(globalT);
+        const point = baseSpline.getPoint(globalT).add(rollOffset.clone());
         const tangent = baseSpline.getTangent(globalT).normalize();
         const tilt = interpolateTilt(trackPoints, globalT, isLooped);
         
@@ -210,7 +234,7 @@ export function Track() {
     }
     
     if (!isLooped && trackPoints.length >= 2) {
-      const lastPoint = baseSpline.getPoint(1);
+      const lastPoint = baseSpline.getPoint(1).add(rollOffset);
       const lastTangent = baseSpline.getTangent(1).normalize();
       const lastTilt = trackPoints[trackPoints.length - 1].tilt;
       railData.push({
@@ -258,25 +282,17 @@ export function Track() {
   const railOffset = 0.3;
   
   for (let i = 0; i < railData.length; i++) {
-    const { point, tilt, normal } = railData[i];
-    
-    const tiltRad = (tilt * Math.PI) / 180;
-    const tiltCos = Math.cos(tiltRad);
-    const tiltSin = Math.sin(tiltRad);
-    
-    const leftYOffset = railOffset * tiltSin;
-    const rightYOffset = -railOffset * tiltSin;
-    const horizontalScale = tiltCos;
+    const { point, normal } = railData[i];
     
     leftRail.push([
-      point.x + normal.x * railOffset * horizontalScale,
-      point.y + leftYOffset,
-      point.z + normal.z * railOffset * horizontalScale,
+      point.x + normal.x * railOffset,
+      point.y + normal.y * railOffset,
+      point.z + normal.z * railOffset,
     ]);
     rightRail.push([
-      point.x - normal.x * railOffset * horizontalScale,
-      point.y + rightYOffset,
-      point.z - normal.z * railOffset * horizontalScale,
+      point.x - normal.x * railOffset,
+      point.y - normal.y * railOffset,
+      point.z - normal.z * railOffset,
     ]);
   }
   
@@ -294,15 +310,17 @@ export function Track() {
       />
       
       {railData.filter((_, i) => i % 2 === 0).map((data, i) => {
-        const { point, tangent, tilt } = data;
-        const angle = Math.atan2(tangent.x, tangent.z);
-        const tiltRad = (tilt * Math.PI) / 180;
+        const { point, tangent, up } = data;
+        
+        const right = new THREE.Vector3().crossVectors(tangent, up).normalize();
+        const matrix = new THREE.Matrix4().makeBasis(right, up, tangent);
+        const euler = new THREE.Euler().setFromRotationMatrix(matrix);
         
         return (
           <mesh
             key={`tie-${i}`}
-            position={[point.x, point.y - 0.08, point.z]}
-            rotation={[tiltRad, angle, 0]}
+            position={[point.x, point.y - up.y * 0.08, point.z]}
+            rotation={euler}
           >
             <boxGeometry args={[1.0, 0.08, 0.12]} />
             <meshStandardMaterial color="#8B4513" />
@@ -311,29 +329,15 @@ export function Track() {
       })}
       
       {showWoodSupports && woodSupports.map((support, i) => {
-        const { pos, tangent, height, tilt } = support;
+        const { pos, tangent, height } = support;
         const angle = Math.atan2(tangent.x, tangent.z);
         const normal = new THREE.Vector3(-tangent.z, 0, tangent.x).normalize();
         
-        const tiltRad = (tilt * Math.PI) / 180;
-        const tiltCos = Math.cos(tiltRad);
-        const tiltSin = Math.sin(tiltRad);
-        
-        const leftX = pos.x + normal.x * railOffset * tiltCos;
-        const leftY = pos.y + railOffset * tiltSin;
-        const leftZ = pos.z + normal.z * railOffset * tiltCos;
-        const rightX = pos.x - normal.x * railOffset * tiltCos;
-        const rightY = pos.y - railOffset * tiltSin;
-        const rightZ = pos.z - normal.z * railOffset * tiltCos;
-        
-        const leftHeight = leftY;
-        const rightHeight = rightY;
-        
         const legInset = 0.15;
-        const leftLegX = pos.x + normal.x * (railOffset - legInset) * tiltCos;
-        const leftLegZ = pos.z + normal.z * (railOffset - legInset) * tiltCos;
-        const rightLegX = pos.x - normal.x * (railOffset - legInset) * tiltCos;
-        const rightLegZ = pos.z - normal.z * (railOffset - legInset) * tiltCos;
+        const leftLegX = pos.x + normal.x * (railOffset - legInset);
+        const leftLegZ = pos.z + normal.z * (railOffset - legInset);
+        const rightLegX = pos.x - normal.x * (railOffset - legInset);
+        const rightLegZ = pos.z - normal.z * (railOffset - legInset);
         
         const crossbraceHeight = height * 0.6;
         const crossLength = Math.sqrt(Math.pow(railOffset * 2, 2) + Math.pow(crossbraceHeight, 2));
@@ -341,12 +345,12 @@ export function Track() {
         
         return (
           <group key={`wood-${i}`}>
-            <mesh position={[leftLegX, leftHeight / 2, leftLegZ]}>
-              <boxGeometry args={[0.12, leftHeight, 0.12]} />
+            <mesh position={[leftLegX, height / 2, leftLegZ]}>
+              <boxGeometry args={[0.12, height, 0.12]} />
               <meshStandardMaterial color="#8B5A2B" />
             </mesh>
-            <mesh position={[rightLegX, rightHeight / 2, rightLegZ]}>
-              <boxGeometry args={[0.12, rightHeight, 0.12]} />
+            <mesh position={[rightLegX, height / 2, rightLegZ]}>
+              <boxGeometry args={[0.12, height, 0.12]} />
               <meshStandardMaterial color="#8B5A2B" />
             </mesh>
             
