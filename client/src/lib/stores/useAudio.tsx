@@ -82,18 +82,12 @@ export const useAudio = create<AudioState>((set, get) => ({
   
   playDaylightMusic: () => {
     const { daylightMusic, isMuted, isDaylightMusicPlaying } = get();
-    console.log("playDaylightMusic called:", { hasDaylightMusic: !!daylightMusic, isMuted, isDaylightMusicPlaying });
     if (daylightMusic && !isDaylightMusicPlaying) {
       daylightMusic.loop = true;
       daylightMusic.volume = 0.5;
       
       if (!isMuted) {
-        console.log("Attempting to play daylight music...");
-        daylightMusic.play().then(() => {
-          console.log("Daylight music playing successfully!");
-        }).catch(error => {
-          console.log("Daylight music play prevented:", error);
-        });
+        daylightMusic.play().catch(() => {});
       }
       set({ isDaylightMusicPlaying: true });
     }
