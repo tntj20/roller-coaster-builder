@@ -20,12 +20,8 @@ function MusicController() {
   
   useEffect(() => {
     const base = import.meta.env.BASE_URL || '/';
-    console.log('BASE_URL from Vite:', import.meta.env.BASE_URL);
-    console.log('Using base:', base);
-    console.log('Hostname:', window.location.hostname);
     
     const dayMusic = new Audio(`${base}sounds/music.mp3`);
-    console.log('Day music path:', `${base}sounds/music.mp3`);
     dayMusic.loop = true;
     dayMusic.volume = 0.5;
     setDaylightMusic(dayMusic);
